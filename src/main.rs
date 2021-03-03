@@ -1,10 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    env,
-    iter::FromIterator,
-    mem::{replace, swap},
-    str::FromStr,
-};
+use std::{collections::HashMap, env, iter::FromIterator, str::FromStr};
 
 use semver::Version;
 
@@ -25,14 +19,14 @@ fn main() {
 }
 
 struct UpdateBuilder {
-    versions: BTreeMap<Version, String>,
+    versions: HashMap<Version, String>,
 }
 
 #[derive(Debug)]
-pub struct Upgrade {
-    pub from: Version,
-    pub to: Version,
-    pub script: String,
+pub struct Upgrade<'a> {
+    pub from: &'a Version,
+    pub to: &'a Version,
+    pub script: &'a str,
 }
 
 impl UpdateBuilder {
@@ -47,55 +41,43 @@ impl UpdateBuilder {
     }
 
     fn generate_scripts<F: FnMut(&Upgrade)>(&self, mut on_each: F) {
-        let mut upgrades = vec![];
-        let mut prev_version: Option<Version> = None;
-        for (version, data) in &self.versions {
-            let from = match &prev_version {
-                Some(prev) => prev.clone(),
-                None => {
-                    prev_version = Some(version.clone());
-                    continue;
-                }
-            };
-
-            let upgrade = Upgrade {
-                from,
-                to: version.clone(),
-                script: data.clone(),
-            };
-
-            on_each(&upgrade);
-
-            upgrades.push(upgrade);
-            prev_version = Some(version.clone());
+        // no point in upgrading if there aren't multiple versions
+        if self.versions.len() <= 1 {
+            return;
         }
 
-        let v = Vec::with_capacity(upgrades.len());
-        let mut prev_upgrades = replace(&mut upgrades, v);
-        while prev_upgrades.len() > 1 {
-            for window in prev_upgrades.windows(2) {
-                // println!("window {:?}", window);
-                let [a, b] = match window {
-                    [a, b] => [a, b],
-                    _ => unreachable!(),
-                };
-                let update = a.merge(b);
-                on_each(&update);
-                upgrades.push(update);
-            }
-            prev_upgrades.clear();
-            swap(&mut prev_upgrades, &mut upgrades);
-        }
-    }
-}
+        // sort the partial scripts by version
+        let mut versions: Vec<_> = self
+            .versions
+            .iter()
+            .map(|(version, script)| VersionedScript { version, script })
+            .collect();
+        versions.sort_unstable_by(|a, b| a.version.cmp(&b.version));
 
-impl Upgrade {
-    fn merge(&self, other: &Self) -> Self {
-        let script = String::from_iter([&*self.script, &*other.script].iter().map(|s| &**s));
-        Self {
-            from: self.from.clone(),
-            to: other.to.clone(),
-            script,
+        // concatenate the partial scripts into a full script; all the upgrade
+        // scripts will be a suffix of this one
+        let full_script = String::from_iter(versions.iter().map(|v| v.script));
+        let mut output = &full_script[..];
+
+        for i in 0..versions.len() - 1 {
+            // we are currently at a given version, so we should exclude things
+            // installed by that version from the script; it's already there
+            let current_version = &versions[i];
+            let from = current_version.version;
+            let installed_len = current_version.script.len();
+            output = &output[installed_len..];
+
+            let up = &Upgrade {
+                from: from,
+                to: versions.last().unwrap().version,
+                script: &*output,
+            };
+            on_each(up)
+        }
+
+        struct VersionedScript<'a> {
+            pub version: &'a Version,
+            pub script: &'a str,
         }
     }
 }
