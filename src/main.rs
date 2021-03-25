@@ -110,6 +110,7 @@ impl UpdateBuilder {
 
         let mut full_len = full_script.len();
         for j in (1..versions.len()).rev() {
+            // exclude any tail scripts we don't need
             full_len -= versions[j].script.len();
             let mut output = &full_script[..full_len];
 
